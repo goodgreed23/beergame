@@ -71,7 +71,7 @@ credentials = ServiceAccountCredentials.from_json_keyfile_dict(
 client = storage.Client(credentials=credentials, project='digital-sprite-450023-c5')
 
 # enter bucket name
-bucket = client.get_bucket('coco-baseline')
+bucket = client.get_bucket('coco-baseline2')
 #bucket = client.get_bucket('coco-main')
 file_name = 'NA'
 
