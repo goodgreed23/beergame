@@ -18,17 +18,17 @@ from models import MODEL_CONFIGS
 from utils.utils import response_generator
 
 st.set_page_config(
-    page_title="Beer Game Assistant (OM)",
+    page_title="Beer Game Assistant",
     page_icon=None,
     layout="centered",
     initial_sidebar_state="expanded",
 )
 
-MODEL_SELECTED = "gpt-4o"
+MODEL_SELECTED = "gpt-5-mini"
 
-st.title("Beer Game Assistant (OM)")
+st.title("Beer Game Assistant")
 st.write(
-    "Ask strategy and concept questions in qualitative mode, or ask calculation questions in quantitative mode."
+    "Ask strategy and concept questions for your Beer Game role."
 )
 
 openai_api_key = st.secrets["OPENAI_API_KEY"]
@@ -55,65 +55,46 @@ except Exception as exc:
     st.error(f"GCP setup failed: {exc}")
     st.stop()
 
-mode_label_to_config = {
-    "Qualitative Coach": "BeerGameQualitative",
-    "Quantitative Coach": "BeerGameQuantitative",
-}
-
-selected_mode_label = st.sidebar.radio(
-    "Assistant Mode",
-    list(mode_label_to_config.keys()),
-    help="Switch between conceptual guidance and step-by-step calculations.",
-)
-selected_mode = mode_label_to_config[selected_mode_label]
-system_prompt = MODEL_CONFIGS[selected_mode]["prompt"]
 user_pid = st.sidebar.text_input("Study ID / Team ID")
+user_role = st.sidebar.text_input("Role")
+selected_mode = "BeerGameQualitative"
+system_prompt = MODEL_CONFIGS[selected_mode]["prompt"]
 autosave_enabled = st.sidebar.checkbox("Autosave to GCP", value=True)
 
-if "start_time_by_mode" not in st.session_state:
-    now = datetime.now()
-    st.session_state["start_time_by_mode"] = {
-        "BeerGameQualitative": now,
-        "BeerGameQuantitative": now,
-    }
+if "start_time" not in st.session_state:
+    st.session_state["start_time"] = datetime.now()
 
-if "messages_by_mode" not in st.session_state:
-    st.session_state["messages_by_mode"] = {
-        "BeerGameQualitative": [
-            {
-                "role": "assistant",
-                "content": (
-                    "I am your Beer Game qualitative coach. Share your round context or decisions, and I will help "
-                    "you reason about delays, backlog, and the bullwhip effect."
-                ),
-            }
-        ],
-        "BeerGameQuantitative": [
-            {
-                "role": "assistant",
-                "content": (
-                    "I am your Beer Game quantitative coach. Send the numbers you have, and I will walk through the "
-                    "formulas and calculations step by step."
-                ),
-            }
-        ],
-    }
+if "messages" not in st.session_state:
+    st.session_state["messages"] = [
+        {
+            "role": "assistant",
+            "content": (
+                "I am your Beer Game qualitative coach. Share your round context or decisions, and I will help "
+                "you reason about delays, backlog, and the bullwhip effect."
+            ),
+        }
+    ]
 
-messages = st.session_state["messages_by_mode"][selected_mode]
+messages = st.session_state["messages"]
 
 
-def save_conversation_to_gcp(messages_to_save, mode_key, pid):
-    if not pid:
-        return None, "missing_pid"
+def sanitize_for_filename(value):
+    return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in value.strip())
+
+
+def save_conversation_to_gcp(messages_to_save, mode_key, pid, role):
+    if not pid or not role:
+        return None, "missing_required_fields"
     try:
         end_time = datetime.now()
-        start_time = st.session_state["start_time_by_mode"][mode_key]
+        start_time = st.session_state["start_time"]
         duration = end_time - start_time
 
         chat_history_df = pd.DataFrame(messages_to_save)
         metadata_rows = pd.DataFrame(
             [
                 {"role": "Mode", "content": mode_key},
+                {"role": "Participant Role", "content": role},
                 {"role": "Start Time", "content": start_time},
                 {"role": "End Time", "content": end_time},
                 {"role": "Duration", "content": duration},
@@ -123,9 +104,9 @@ def save_conversation_to_gcp(messages_to_save, mode_key, pid):
 
         created_files_path = f"conv_history_P{pid}"
         os.makedirs(created_files_path, exist_ok=True)
-        timestamp = end_time.strftime("%Y%m%d_%H%M%S")
-        mode_suffix = "qualitative" if mode_key == "BeerGameQualitative" else "quantitative"
-        file_name = f"beergame_{mode_suffix}_P{pid}_{timestamp}.csv"
+        safe_pid = sanitize_for_filename(pid)
+        safe_role = sanitize_for_filename(role)
+        file_name = f"beergame_qualitative_P{safe_pid}_{safe_role}.csv"
         local_path = os.path.join(created_files_path, file_name)
 
         chat_history_df.to_csv(local_path, index=False)
@@ -136,34 +117,23 @@ def save_conversation_to_gcp(messages_to_save, mode_key, pid):
     except Exception as exc:
         return None, str(exc)
 
-if st.sidebar.button("Clear Current Mode Chat"):
-    if selected_mode == "BeerGameQualitative":
-        st.session_state["messages_by_mode"][selected_mode] = [
-            {
-                "role": "assistant",
-                "content": (
-                    "I am your Beer Game qualitative coach. Share your round context or decisions, and I will help "
-                    "you reason about delays, backlog, and the bullwhip effect."
-                ),
-            }
-        ]
-    else:
-        st.session_state["messages_by_mode"][selected_mode] = [
-            {
-                "role": "assistant",
-                "content": (
-                    "I am your Beer Game quantitative coach. Send the numbers you have, and I will walk through the "
-                    "formulas and calculations step by step."
-                ),
-            }
-        ]
-    messages = st.session_state["messages_by_mode"][selected_mode]
-    st.session_state["start_time_by_mode"][selected_mode] = datetime.now()
+if st.sidebar.button("Clear Chat"):
+    st.session_state["messages"] = [
+        {
+            "role": "assistant",
+            "content": (
+                "I am your Beer Game qualitative coach. Share your round context or decisions, and I will help "
+                "you reason about delays, backlog, and the bullwhip effect."
+            ),
+        }
+    ]
+    messages = st.session_state["messages"]
+    st.session_state["start_time"] = datetime.now()
 
 if st.sidebar.button("Save Conversation to GCP"):
-    saved_file, save_error = save_conversation_to_gcp(messages, selected_mode, user_pid)
-    if save_error == "missing_pid":
-        st.sidebar.error("Enter Study ID / Team ID first.")
+    saved_file, save_error = save_conversation_to_gcp(messages, selected_mode, user_pid, user_role)
+    if save_error == "missing_required_fields":
+        st.sidebar.error("Enter Study ID / Team ID and Role first.")
     elif save_error:
         st.sidebar.error(f"Save failed: {save_error}")
     else:
@@ -173,7 +143,11 @@ for message in messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if user_input := st.chat_input("Ask a Beer Game question..."):
+chat_enabled = bool(user_pid.strip()) and bool(user_role.strip())
+if not chat_enabled:
+    st.info("Enter Study ID / Team ID and Role in the sidebar to start chatting.")
+
+if user_input := st.chat_input("Ask a Beer Game question...", disabled=not chat_enabled):
     messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -202,9 +176,9 @@ if user_input := st.chat_input("Ask a Beer Game question..."):
     messages.append({"role": "assistant", "content": assistant_text})
 
     if autosave_enabled:
-        saved_file, save_error = save_conversation_to_gcp(messages, selected_mode, user_pid)
-        if save_error == "missing_pid":
-            st.sidebar.warning("Autosave is on. Enter Study ID / Team ID to enable uploads.")
+        saved_file, save_error = save_conversation_to_gcp(messages, selected_mode, user_pid, user_role)
+        if save_error == "missing_required_fields":
+            st.sidebar.warning("Autosave is on. Enter Study ID / Team ID and Role to enable uploads.")
         elif save_error:
             st.sidebar.error(f"Autosave failed: {save_error}")
         else:
