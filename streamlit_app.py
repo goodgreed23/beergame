@@ -54,7 +54,7 @@ user_pid = st.sidebar.text_input("Study ID / Team ID")
 user_role = st.sidebar.text_input("Role")
 selected_mode = "BeerGameQualitative"
 system_prompt = MODEL_CONFIGS[selected_mode]["prompt"]
-autosave_enabled = st.sidebar.checkbox("Autosave to GCP", value=True)
+autosave_enabled = st.sidebar.checkbox("Autosave", value=True)
 
 if "start_time" not in st.session_state:
     st.session_state["start_time"] = datetime.now()
@@ -163,7 +163,7 @@ if st.sidebar.button("Clear Chat"):
     messages = st.session_state["messages"]
     st.session_state["start_time"] = datetime.now()
 
-if st.sidebar.button("Save Conversation to GCP"):
+if st.sidebar.button("Save Conversation"):
     saved_file, save_error = save_conversation_to_gcp(messages, selected_mode, user_pid, user_role)
     if save_error == "missing_required_fields":
         st.sidebar.error("Enter Study ID / Team ID and Role first.")
