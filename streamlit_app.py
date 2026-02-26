@@ -24,7 +24,11 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-MODEL_SELECTED = "gpt-5-mini"
+MODEL_SELECTED = st.secrets.get("OPENAI_MODEL", "gpt-5-mini")
+FALLBACK_MODEL = "gpt-4o-mini"
+
+st.title("Beer Game Assistant")
+#MODEL_SELECTED = "gpt-5-mini"
 
 st.title("Beer Game Assistant")
 st.write(
