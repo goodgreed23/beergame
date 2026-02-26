@@ -1,227 +1,202 @@
 import streamlit as st
-from openai import OpenAI
 import pandas as pd
 import os
-import utils.prompt_utils as prompt_utils
-import openpyxl
-
+import shutil
+from datetime import datetime
 from langchain_community.chat_models import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain.prompts import PromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate, ChatPromptTemplate
-from langchain_core.prompts import MessagesPlaceholder
-from langchain.chains import LLMChain, ConversationChain
-from langchain_core.output_parsers import StrOutputParser
-from langchain.memory import ConversationBufferMemory
-from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain.schema import AIMessage, HumanMessage
-from langchain_community.chat_message_histories import StreamlitChatMessageHistory
+from langchain_core.messages import AIMessage, HumanMessage
+try:
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+except ImportError:
+    from langchain.prompts import ChatPromptTemplate
+    from langchain_core.prompts import MessagesPlaceholder
 
 from gcloud import storage
-# from google.cloud import storage
 from oauth2client.service_account import ServiceAccountCredentials
-# from google.oauth2.service_account import Credentials
-
 
 from models import MODEL_CONFIGS
-from utils.prompt_utils import target_styles, definitions, survey_items
-from utils.eval_qs import TA_0s, TA_100s
 from utils.utils import response_generator
-import time
-from datetime import datetime
 
-import shutil
+st.set_page_config(
+    page_title="Beer Game Assistant (OM)",
+    page_icon=None,
+    layout="centered",
+    initial_sidebar_state="expanded",
+)
 
-st.set_page_config(page_title="Therapist Chatbot Evaluation", page_icon=None, layout="centered", initial_sidebar_state="expanded", menu_items=None)
-
-# CONFIGS
-style_id = 6
-min_turns = 2   # number of turns to make before users can save the chat
 MODEL_SELECTED = "gpt-4o"
 
-# Show title and description.
-st.title(" Therapist Chatbot Evaluation")
+st.title("Beer Game Assistant (OM)")
+st.write(
+    "Ask strategy and concept questions in qualitative mode, or ask calculation questions in quantitative mode."
+)
 
-# Get participant ID 
-user_PID = st.text_input("What is your study ID?")
-
-# Create a dropdown selection box
-# target_style = st.selectbox('Choose a communication st:', styles)
-
-# Display the selected option
-st.write("""**Start chatting with the AI therapist. After getting >= 10 responses from the therapist,  a 'Save Conversation' button will appear. After you finished the conversation naturally,
-         you may click the 'Save Conversation' button to save the conversation and then fill out the evaluation questions.**""")
-
-# Retrieve api key from secrets
 openai_api_key = st.secrets["OPENAI_API_KEY"]
+llm = ChatOpenAI(model=MODEL_SELECTED, api_key=openai_api_key)
 
 # Initializing GCP credentials and bucket details
 credentials_dict = {
-        'type': st.secrets.gcs["type"],
-        'client_id': st.secrets.gcs["client_id"],
-        'client_email': st.secrets.gcs["client_email"],
-        'private_key': st.secrets.gcs["private_key"],
-        'private_key_id': st.secrets.gcs["private_key_id"],
-        }
-credentials = ServiceAccountCredentials.from_json_keyfile_dict(
-    credentials_dict
+    "type": st.secrets.gcs["type"],
+    "client_id": st.secrets.gcs["client_id"],
+    "client_email": st.secrets.gcs["client_email"],
+    "private_key": st.secrets.gcs["private_key"],
+    "private_key_id": st.secrets.gcs["private_key_id"],
+}
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict)
+client = storage.Client(credentials=credentials, project="beer-game-488600")
+bucket = client.get_bucket("beergame1")
+
+mode_label_to_config = {
+    "Qualitative Coach": "BeerGameQualitative",
+    "Quantitative Coach": "BeerGameQuantitative",
+}
+
+selected_mode_label = st.sidebar.radio(
+    "Assistant Mode",
+    list(mode_label_to_config.keys()),
+    help="Switch between conceptual guidance and step-by-step calculations.",
 )
-# credentials = Credentials.from_service_account_info(
-#     credentials_dict
-# )
-client = storage.Client(credentials=credentials, project='digital-sprite-450023-c5')
+selected_mode = mode_label_to_config[selected_mode_label]
+system_prompt = MODEL_CONFIGS[selected_mode]["prompt"]
+user_pid = st.sidebar.text_input("Study ID / Team ID")
+autosave_enabled = st.sidebar.checkbox("Autosave to GCP", value=True)
 
-# enter bucket name
-bucket = client.get_bucket('coco-baseline2')
-#bucket = client.get_bucket('coco-main')
-file_name = 'NA'
+if "start_time_by_mode" not in st.session_state:
+    now = datetime.now()
+    st.session_state["start_time_by_mode"] = {
+        "BeerGameQualitative": now,
+        "BeerGameQuantitative": now,
+    }
+
+if "messages_by_mode" not in st.session_state:
+    st.session_state["messages_by_mode"] = {
+        "BeerGameQualitative": [
+            {
+                "role": "assistant",
+                "content": (
+                    "I am your Beer Game qualitative coach. Share your round context or decisions, and I will help "
+                    "you reason about delays, backlog, and the bullwhip effect."
+                ),
+            }
+        ],
+        "BeerGameQuantitative": [
+            {
+                "role": "assistant",
+                "content": (
+                    "I am your Beer Game quantitative coach. Send the numbers you have, and I will walk through the "
+                    "formulas and calculations step by step."
+                ),
+            }
+        ],
+    }
+
+messages = st.session_state["messages_by_mode"][selected_mode]
 
 
+def save_conversation_to_gcp(messages_to_save, mode_key, pid):
+    if not pid:
+        return None, "missing_pid"
+    try:
+        end_time = datetime.now()
+        start_time = st.session_state["start_time_by_mode"][mode_key]
+        duration = end_time - start_time
 
-
-if not user_PID:
-    st.info("Please enter your participant ID to continue.", icon="🗝️")
-else:
-    
-    # start tracking the duration
-    if 'start_time' not in st.session_state:
-        st.session_state['start_time'] = datetime.now()
-    if "evaluation_durations" not in st.session_state:
-        st.session_state["evaluation_durations"] = None
-    start_time_row = pd.DataFrame([{"role": "Start Time", "content": st.session_state['start_time']}])
-
-    # Create an OpenAI client.
-    llm = ChatOpenAI(model=MODEL_SELECTED, api_key=openai_api_key)
-    # llm = ChatOpenAI(model="gpt-4o-mini", api_key=openai_api_key)
-
-    # therapist agent
-    therapist_model_config = MODEL_CONFIGS['Therapist']
-    therapyagent_prompt_template = ChatPromptTemplate.from_messages([
-        ("system", therapist_model_config['prompt']),
-        MessagesPlaceholder(variable_name="history"), # dynamic insertion of past conversation history
-        ("human", "{input}"),
-    ])
-    # Communication style modifier prompt
-    modifier_model_config = MODEL_CONFIGS['Modifier']
-    csm_prompt_template = PromptTemplate(
-        variables=["communication_style", "chat_history", "unadapted_response"], template=modifier_model_config['prompt']
-    )
-
-    # set up streamlit history memory
-    msgs = StreamlitChatMessageHistory(key="chat_history")
-
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = [
-            # Prewritten first turn
-            # {"role": "user", "content": "Hello."},
-            {"role": "assistant", "content": """Hello, I am an AI therapist, here to support you in navigating the challenges and emotions you may face as a caregiver. 
-             Is there a specific caregiving challenge or experience you would like to share with me today?"""},
-        ]
-    
-    def save_duration():
-        if st.session_state["start_time"]:
-            duration = datetime.now() - st.session_state["start_time"]
-            st.session_state["evaluation_durations"] = duration
-            # st.session_state["start_time"] = None  # Reset for the next model
-        return duration
-    
-    
-
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    chat_history_df = pd.DataFrame(st.session_state.messages)
-    
-
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if user_input := st.chat_input("Enter your input here."):
-
-        # create a therapy chatbot llm chain
-        therapyagent_chain = therapyagent_prompt_template | llm
-        therapy_chain_with_history = RunnableWithMessageHistory(
-            therapyagent_chain,
-            lambda session_id: msgs,  # Always return the instance created earlier
-            input_messages_key="input",
-            # output_messages_key="content",
-            history_messages_key="history",
+        chat_history_df = pd.DataFrame(messages_to_save)
+        metadata_rows = pd.DataFrame(
+            [
+                {"role": "Mode", "content": mode_key},
+                {"role": "Start Time", "content": start_time},
+                {"role": "End Time", "content": end_time},
+                {"role": "Duration", "content": duration},
+            ]
         )
+        chat_history_df = pd.concat([chat_history_df, metadata_rows], ignore_index=True)
 
-        # create a csm chain
-        csmagent_chain = LLMChain(
-            llm=llm,
-            prompt=csm_prompt_template,
-            verbose=False,
-            output_parser=StrOutputParser()
-        )
+        created_files_path = f"conv_history_P{pid}"
+        os.makedirs(created_files_path, exist_ok=True)
+        timestamp = end_time.strftime("%Y%m%d_%H%M%S")
+        mode_suffix = "qualitative" if mode_key == "BeerGameQualitative" else "quantitative"
+        file_name = f"beergame_{mode_suffix}_P{pid}_{timestamp}.csv"
+        local_path = os.path.join(created_files_path, file_name)
 
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
-
-        config = {"configurable": {"session_id": "any"}}
-        unada_response = therapy_chain_with_history.invoke({"input": user_input}, config)
-        unada_bot_response = unada_response.content
-
-        target_style = target_styles[style_id]
-        definition = definitions[style_id]
-        survey_item = survey_items[style_id]
-        ada_response = csmagent_chain.predict(communication_style=target_style,
-                                            definition=definition,
-                                            survey_item=survey_item,
-                                            unadapted_chat_history= st.session_state.messages,
-                                            unadapted_response=unada_bot_response)
-
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(response_generator(response = ada_response))
-
-        st.session_state.messages.append({"role": "assistant", "content": ada_response})
-        chat_history_df = pd.DataFrame(st.session_state.messages)
-
-    # automatically save the conversation after reaching the minimum turns (e.g. 10)
-    if chat_history_df.shape[0]>=min_turns or (user_input=="SAVE" or user_input=="save" or user_input=="STOP" or user_input=="stop"):
-
-        end_time_row = pd.DataFrame([{"role": "End Time", "content": datetime.now()}])
-        duration_row = pd.DataFrame([{"role": "Duration", "content": save_duration()}])
-        # Append the time rows
-        chat_history_df = pd.concat([chat_history_df, start_time_row, end_time_row, duration_row], ignore_index=True)
-
-        
-        created_files_path = "conv_history_P{PID}".format(PID=user_PID)
-        if not os.path.exists(created_files_path):
-            os.makedirs(created_files_path)
-
-        #file_name = "Unadapted_P{PID}.csv".format(PID=user_PID)
-        file_name = "{style}_P{PID}.csv".format(style=target_styles[style_id], PID=user_PID)
-        # st.write("file name is "+file_name)
-
-        # chat_history_df.to_csv(file_name, index=False)
-        chat_history_df.to_csv(os.path.join(created_files_path,file_name), index=False)
-
+        chat_history_df.to_csv(local_path, index=False)
         blob = bucket.blob(file_name)
-        blob.upload_from_filename(os.path.join(created_files_path,file_name))
-        # blob = bucket.blob(file_name)
-        # blob.upload_from_filename(file_name)
+        blob.upload_from_filename(local_path)
+        shutil.rmtree(created_files_path, ignore_errors=True)
+        return file_name, None
+    except Exception as exc:
+        return None, str(exc)
 
-        shutil.rmtree(created_files_path)
+if st.sidebar.button("Clear Current Mode Chat"):
+    if selected_mode == "BeerGameQualitative":
+        st.session_state["messages_by_mode"][selected_mode] = [
+            {
+                "role": "assistant",
+                "content": (
+                    "I am your Beer Game qualitative coach. Share your round context or decisions, and I will help "
+                    "you reason about delays, backlog, and the bullwhip effect."
+                ),
+            }
+        ]
+    else:
+        st.session_state["messages_by_mode"][selected_mode] = [
+            {
+                "role": "assistant",
+                "content": (
+                    "I am your Beer Game quantitative coach. Send the numbers you have, and I will walk through the "
+                    "formulas and calculations step by step."
+                ),
+            }
+        ]
+    messages = st.session_state["messages_by_mode"][selected_mode]
+    st.session_state["start_time_by_mode"][selected_mode] = datetime.now()
 
-        # if st.button("When the chat feels naturally concluded, click here to save it."):
-        #     st.write("**Chat history is saved successfully. You can now use the code ‘COCO123’ to continue the evaluation.**")
-        if chat_history_df.shape[0] >= 20:
-            if st.button("Save Conversation & Start Evaluation"):
-                st.write("**Chat history is saved successfully. You can begin filling out the evaluation questions now.**")
-                st.cache_data.clear()
+if st.sidebar.button("Save Conversation to GCP"):
+    saved_file, save_error = save_conversation_to_gcp(messages, selected_mode, user_pid)
+    if save_error == "missing_pid":
+        st.sidebar.error("Enter Study ID / Team ID first.")
+    elif save_error:
+        st.sidebar.error(f"Save failed: {save_error}")
+    else:
+        st.sidebar.success(f"Saved to GCP bucket as {saved_file}")
 
-        # csv = chat_history_df.to_csv()
-        # st.download_button(
-        #     label="Click here to also download a local copy of your chat history.",
-        #     data=csv,
-        #     file_name=file_name,
-        #     mime="text/csv",
-        # )
+for message in messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+if user_input := st.chat_input("Ask a Beer Game question..."):
+    messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
+    history_messages = []
+    for msg in messages[:-1]:
+        if msg["role"] == "user":
+            history_messages.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            history_messages.append(AIMessage(content=msg["content"]))
+
+    prompt_template = ChatPromptTemplate.from_messages(
+        [
+            ("system", system_prompt),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{input}"),
+        ]
+    )
+    chain = prompt_template | llm
+    llm_response = chain.invoke({"history": history_messages, "input": user_input})
+    assistant_text = llm_response.content
+
+    with st.chat_message("assistant"):
+        st.write_stream(response_generator(response=assistant_text))
+
+    messages.append({"role": "assistant", "content": assistant_text})
+
+    if autosave_enabled:
+        saved_file, save_error = save_conversation_to_gcp(messages, selected_mode, user_pid)
+        if save_error == "missing_pid":
+            st.sidebar.warning("Autosave is on. Enter Study ID / Team ID to enable uploads.")
+        elif save_error:
+            st.sidebar.error(f"Autosave failed: {save_error}")
+        else:
+            st.sidebar.caption(f"Autosaved: {saved_file}")
