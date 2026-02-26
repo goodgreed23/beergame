@@ -11,8 +11,8 @@ except ImportError:
     from langchain.prompts import ChatPromptTemplate
     from langchain_core.prompts import MessagesPlaceholder
 
-from gcloud import storage
-from oauth2client.service_account import ServiceAccountCredentials
+from google.cloud import storage
+from google.oauth2.service_account import Credentials
 
 from models import MODEL_CONFIGS
 from utils.utils import response_generator
@@ -42,7 +42,7 @@ credentials_dict = {
     "private_key": st.secrets.gcs["private_key"],
     "private_key_id": st.secrets.gcs["private_key_id"],
 }
-credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict)
+credentials = Credentials.from_service_account_info(credentials_dict)
 client = storage.Client(credentials=credentials, project="beer-game-488600")
 bucket = client.get_bucket("beergame1")
 
