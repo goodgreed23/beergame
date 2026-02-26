@@ -1,19 +1,17 @@
-from utils.prompt_utils import csm_prompt_template, unadabot_system_prompt
+from utils.prompt_utils import qualitative_beergame_prompt, quantitative_beergame_prompt
 
 
-# Model configurations remain the same
 MODEL_CONFIGS = {
-    "Modifier": {
-        "name": "Modifier model",
-        "prompt": csm_prompt_template,
+    "BeerGameQualitative": {
+        "name": "Beer Game qualitative coach",
+        "prompt": qualitative_beergame_prompt,
         "uses_rag": False,
-        "uses_classification": False
+        "uses_classification": False,
     },
-    "Therapist": {
-        "name": "Therapist model",
-        "prompt": unadabot_system_prompt,
+    "BeerGameQuantitative": {
+        "name": "Beer Game quantitative coach",
+        "prompt": quantitative_beergame_prompt,
         "uses_rag": False,
-        "uses_classification": False
-    }
+        "uses_classification": False,
+    },
 }
-
