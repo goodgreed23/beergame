@@ -77,6 +77,17 @@ def sanitize_for_filename(value):
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in value.strip())
 
 
+def build_system_prompt(base_prompt, role):
+    role_text = role.strip() if role else ""
+    if not role_text:
+        return base_prompt
+    return (
+        f"{base_prompt}\n\n"
+        f"User role in Beer Game: {role_text}.\n"
+        "Tailor all guidance to this role's decisions, responsibilities, and tradeoffs."
+    )
+
+
 def generate_assistant_text(messages_to_send, system_text):
     response_input = [{"role": "system", "content": system_text}]
     response_input.extend(
@@ -175,7 +186,8 @@ if user_input := st.chat_input("Ask a Beer Game question...", disabled=not chat_
         st.markdown(user_input)
 
     try:
-        assistant_text = generate_assistant_text(messages, system_prompt)
+        role_aware_prompt = build_system_prompt(system_prompt, user_role)
+        assistant_text = generate_assistant_text(messages, role_aware_prompt)
     except Exception as exc:
         st.error(str(exc))
         st.stop()
