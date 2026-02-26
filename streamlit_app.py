@@ -64,8 +64,7 @@ if "messages" not in st.session_state:
         {
             "role": "assistant",
             "content": (
-                "I am your Beer Game qualitative coach. Share your round context or decisions, and I will help "
-                "you reason about delays, backlog, and the bullwhip effect."
+                "Hello, I am your Beer Game coach."
             ),
         }
     ]
@@ -85,6 +84,14 @@ def build_system_prompt(base_prompt, role):
         f"{base_prompt}\n\n"
         f"User role in Beer Game: {role_text}.\n"
         "Tailor all guidance to this role's decisions, responsibilities, and tradeoffs."
+    )
+
+
+def build_welcome_message(role):
+    role_text = role.strip()
+    return (
+        f"You are the '{role_text}'. I will help you with making decisions. "
+        "Please share the current round context, incoming demand, inventory, backlog, and pipeline orders."
     )
 
 
@@ -150,16 +157,9 @@ def save_conversation_to_gcp(messages_to_save, mode_key, pid, role):
     except Exception as exc:
         return None, str(exc)
 
-if st.sidebar.button("Clear Chat"):
-    st.session_state["messages"] = [
-        {
-            "role": "assistant",
-            "content": (
-                "I am your Beer Game qualitative coach. Share your round context or decisions, and I will help "
-                "you reason about delays, backlog, and the bullwhip effect."
-            ),
-        }
-    ]
+if user_role.strip() and st.session_state.get("welcome_role") != user_role.strip():
+    st.session_state["messages"] = [{"role": "assistant", "content": build_welcome_message(user_role)}]
+    st.session_state["welcome_role"] = user_role.strip()
     messages = st.session_state["messages"]
     st.session_state["start_time"] = datetime.now()
 
