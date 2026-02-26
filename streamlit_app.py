@@ -37,14 +37,23 @@ llm = ChatOpenAI(model=MODEL_SELECTED, api_key=openai_api_key)
 # Initializing GCP credentials and bucket details
 credentials_dict = {
     "type": st.secrets.gcs["type"],
+    "project_id": st.secrets.gcs.get("project_id"),
     "client_id": st.secrets.gcs["client_id"],
     "client_email": st.secrets.gcs["client_email"],
     "private_key": st.secrets.gcs["private_key"],
     "private_key_id": st.secrets.gcs["private_key_id"],
+    # Required by google-auth; default value works for standard service accounts.
+    "token_uri": st.secrets.gcs.get("token_uri", "https://oauth2.googleapis.com/token"),
 }
-credentials = Credentials.from_service_account_info(credentials_dict)
-client = storage.Client(credentials=credentials, project="beer-game-488600")
-bucket = client.get_bucket("beergame1")
+credentials_dict["private_key"] = credentials_dict["private_key"].replace("\\n", "\n")
+
+try:
+    credentials = Credentials.from_service_account_info(credentials_dict)
+    client = storage.Client(credentials=credentials, project="beer-game-488600")
+    bucket = client.get_bucket("beergame1")
+except Exception as exc:
+    st.error(f"GCP setup failed: {exc}")
+    st.stop()
 
 mode_label_to_config = {
     "Qualitative Coach": "BeerGameQualitative",
